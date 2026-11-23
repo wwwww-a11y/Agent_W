@@ -18,6 +18,7 @@ import (
 	"agent_w/internal/memory"
 	"agent_w/internal/skills"
 	"agent_w/internal/shell"
+	"agent_w/internal/termui"
 )
 
 func main() {
@@ -52,13 +53,13 @@ func runRepl() {
 
 	a, err := buildAgent(outDir, providerKind, "", "", "")
 	if err != nil {
-		fmt.Println("未启用大模型，改用本地模板：", err)
+		termui.Warn("未启用大模型，改用本地模板：%v", err)
 		a, _ = buildAgent(outDir, "local", "", "", "")
 	}
 
 	mem, err := memory.New(memoryDir())
 	if err != nil {
-		fmt.Println("记忆初始化失败（不影响生成）：", err)
+		termui.Warn("记忆初始化失败（不影响生成）：%v", err)
 		mem = nil
 	}
 
@@ -67,22 +68,23 @@ func runRepl() {
 
 	reg, err := skills.Load(skillsDir())
 	if err != nil {
-		fmt.Println("技能加载失败（不影响生成）：", err)
+		termui.Warn("技能加载失败（不影响生成）：%v", err)
 		reg, _ = skills.Load("")
 	}
 
 	// 会话内对话历史：每 20 轮把较早的对话压缩成一段摘要。
 	hist := core.NewChatHistory(20)
 
-	fmt.Println("网页生成 Agent 已启动（来源：" + providerKind + "）")
-	fmt.Println("直接描述你想要的网页；输入 exit / quit 退出；输入 history 查看历史摘要。")
-	fmt.Println("输入 ! 开头可直接执行 shell 命令，例如 !go version")
-	fmt.Println("输入 skills 查看已加载技能；输入 skill <技能名> [参数] 调用技能。")
-	fmt.Println("可选格式：项目名:页面需求（项目名用英文或拼音），例如 my_home:做一个深色个人主页")
+	termui.Banner("网页生成 Agent", "来源："+providerKind)
+	termui.Hint("直接描述你想要的网页；输入 exit / quit 退出；输入 history 查看历史摘要。")
+	termui.Hint("输入 ! 开头可直接执行 shell 命令，例如 !go version")
+	termui.Hint("输入 skills 查看已加载技能；输入 skill <技能名> [参数] 调用技能。")
+	termui.Hint("可选格式：项目名:页面需求（项目名用英文或拼音），例如 my_home:做一个深色个人主页")
 
 	scanner := bufio.NewScanner(os.Stdin)
 	for {
-		fmt.Print("\n> ")
+		fmt.Println()
+		termui.Prompt()
 		if !scanner.Scan() {
 			break
 		}
@@ -91,12 +93,13 @@ func runRepl() {
 			continue
 		}
 		if isExit(input) {
-			fmt.Println("再见！")
+			termui.Info("再见！")
 			break
 		}
 		if isHistory(input) {
 			if mem != nil {
 				text, _ := mem.SummaryText()
+				termui.Section("历史记忆")
 				fmt.Println(text)
 			}
 			continue
@@ -115,15 +118,15 @@ func runRepl() {
 			cmd := strings.TrimSpace(strings.TrimPrefix(input, "!"))
 			res, err := runner.Run(context.Background(), cmd)
 			if err != nil {
-				fmt.Println("执行失败：", err)
+				termui.Error("执行失败：%v", err)
 			} else {
 				if res.Stdout != "" {
 					fmt.Print(res.Stdout)
 				}
 				if res.Stderr != "" {
-					fmt.Println("stderr:", res.Stderr)
+					termui.Hint("stderr: %s", res.Stderr)
 				}
-				fmt.Println("退出码:", res.ExitCode)
+				termui.Hint("退出码: %d", res.ExitCode)
 			}
 			continue
 		}
@@ -131,19 +134,19 @@ func runRepl() {
 		// 自然语言输入：先让模型判断是做页面需求，还是闲聊/其他。
 		needPage, reply, err := a.Classify(input)
 		if err != nil {
-			fmt.Println("（意图判断失败，按网页需求处理：", err, "）")
+			termui.Warn("意图判断失败，按网页需求处理：%v", err)
 		} else if !needPage {
 			if reply != "" {
 				fmt.Println(reply)
 			} else {
-				fmt.Println("你好，想做个什么网页？直接描述需求即可。")
+				termui.Hint("你好，想做个什么网页？直接描述需求即可。")
 			}
 			continue
 		}
 
 		// 若命中技能触发词，先提示可调用的技能（不拦截生成流程）。
 		if m := reg.Match(input); m != nil {
-			fmt.Printf("（提示：可使用技能 skill %s）\n", m.Name)
+			termui.Hint("可使用技能 skill %s", m.Name)
 		}
 
 		runGeneration(a, mem, scanner, providerKind, input, hist)
@@ -176,7 +179,7 @@ func defaultProvider() string {
 
 // askOpen 询问用户是否在浏览器打开，默认不打开。
 func askOpen(scanner *bufio.Scanner) bool {
-	fmt.Print("是否在浏览器打开？(y/N) ")
+	fmt.Print(termui.Bold("是否在浏览器打开？(y/N) "))
 	if !scanner.Scan() {
 		return false
 	}
@@ -240,11 +243,11 @@ func create() {
 		log.Fatalf("生成失败: %v", err)
 	}
 
-	fmt.Println("生成完成：")
-	fmt.Println("项目根目录:", result.Root)
-	fmt.Println("文件清单：")
+	termui.Section("生成完成")
+	termui.Item("项目根目录: " + termui.Blue(result.Root))
+	termui.Section("文件清单")
 	for _, f := range result.Files {
-		fmt.Println("  -", f)
+		termui.Item(termui.Blue(f))
 	}
 
 	if mem, err := memory.New(memoryDir()); err == nil {
@@ -375,17 +378,17 @@ func runGeneration(a *core.WebAgent, mem *memory.Store, scanner *bufio.Scanner, 
 
 	hist.AddUser(desc)
 
-	fmt.Println("生成中，请稍候...")
+	termui.Info("生成中，请稍候...")
 	result, err := a.Create(p, hist.Context())
 	if err != nil {
-		fmt.Println("生成失败：", err)
+		termui.Error("生成失败：%v", err)
 		return
 	}
 
-	fmt.Println("生成完成：", result.Root)
-	fmt.Println("文件清单：")
+	termui.Success("生成完成：%s", termui.Blue(result.Root))
+	termui.Section("文件清单")
 	for _, f := range result.Files {
-		fmt.Println("  -", f)
+		termui.Item(termui.Blue(f))
 	}
 
 	hist.AddAssistant(assistantSummary(p, result))
@@ -395,19 +398,19 @@ func runGeneration(a *core.WebAgent, mem *memory.Store, scanner *bufio.Scanner, 
 	if hist.ShouldCompress() {
 		summary, err := a.Summarize(hist.Recent())
 		if err != nil {
-			fmt.Println("（对话压缩失败，保留现有历史：", err, "）")
+			termui.Warn("对话压缩失败，保留现有历史：%v", err)
 		} else if summary != "" {
 			hist.Compress(summary)
-			fmt.Println("（已把较早的对话压缩成摘要）")
+			termui.Hint("已把较早的对话压缩成摘要")
 		}
 	}
 
 	if askOpen(scanner) {
 		indexPath := filepath.Join(result.Root, "index.html")
 		if err := openViaMCP(indexPath); err != nil {
-			fmt.Println("打开失败：", err)
+			termui.Error("打开失败：%v", err)
 		} else {
-			fmt.Println("已通过 MCP 工具在浏览器打开。")
+			termui.Success("已通过 MCP 工具在浏览器打开。")
 		}
 	}
 }
@@ -445,13 +448,13 @@ func parseSkillCall(input string) (name, arg string, ok bool) {
 // printSkills 列出已加载技能及其用途。
 func printSkills(reg *skills.Registry) {
 	list := reg.List()
-	fmt.Printf("已加载技能 %d 个：\n", len(list))
+	termui.Section(fmt.Sprintf("已加载技能 %d 个", len(list)))
 	for _, sk := range list {
-		line := fmt.Sprintf("  %s — %s", sk.Name, sk.Description)
+		line := termui.Cyan(sk.Name) + " — " + sk.Description
 		if sk.Usage != "" {
 			line += "（" + sk.Usage + "）"
 		}
-		fmt.Println(line)
+		termui.Item(line)
 	}
 }
 
@@ -459,7 +462,7 @@ func printSkills(reg *skills.Registry) {
 func runSkill(reg *skills.Registry, name, arg string, a *core.WebAgent, mem *memory.Store, scanner *bufio.Scanner, providerKind string, runner *shell.Runner, hist *core.ChatHistory) {
 	sk, ok := reg.Get(name)
 	if !ok {
-		fmt.Println("未找到技能：", name, "（输入 skills 查看可用技能）")
+		termui.Error("未找到技能：%s（输入 skills 查看可用技能）", name)
 		return
 	}
 
@@ -467,47 +470,48 @@ func runSkill(reg *skills.Registry, name, arg string, a *core.WebAgent, mem *mem
 	case "history":
 		if mem != nil {
 			text, _ := mem.SummaryText()
+			termui.Section("历史记忆")
 			fmt.Println(text)
 		} else {
-			fmt.Println("记忆未初始化。")
+			termui.Hint("记忆未初始化。")
 		}
 	case "open_html":
 		if arg == "" {
-			fmt.Println("缺少参数：HTML 文件路径（", sk.Usage, "）")
+			termui.Error("缺少参数：HTML 文件路径（%s）", sk.Usage)
 			return
 		}
 		if err := openViaMCP(arg); err != nil {
-			fmt.Println("打开失败：", err)
+			termui.Error("打开失败：%v", err)
 		} else {
-			fmt.Println("已通过 MCP 工具在浏览器打开。")
+			termui.Success("已通过 MCP 工具在浏览器打开。")
 		}
 	case "run_command":
 		if arg == "" {
-			fmt.Println("缺少参数：要执行的命令（", sk.Usage, "）")
+			termui.Error("缺少参数：要执行的命令（%s）", sk.Usage)
 			return
 		}
 		res, err := runner.Run(context.Background(), arg)
 		if err != nil {
-			fmt.Println("执行失败：", err)
+			termui.Error("执行失败：%v", err)
 		} else {
 			if res.Stdout != "" {
 				fmt.Print(res.Stdout)
 			}
 			if res.Stderr != "" {
-				fmt.Println("stderr:", res.Stderr)
+				termui.Hint("stderr: %s", res.Stderr)
 			}
-			fmt.Println("退出码:", res.ExitCode)
+			termui.Hint("退出码: %d", res.ExitCode)
 		}
 	case "generate":
 		if arg == "" {
-			fmt.Println("缺少参数：页面需求（", sk.Usage, "）")
+			termui.Error("缺少参数：页面需求（%s）", sk.Usage)
 			return
 		}
 		runGeneration(a, mem, scanner, providerKind, arg, hist)
 	case "prompt":
 		fmt.Println(sk.Prompt)
 	default:
-		fmt.Println("技能", sk.Name, "绑定了未知动作:", sk.Command)
+		termui.Warn("技能 %s 绑定了未知动作: %s", sk.Name, sk.Command)
 	}
 }
 
@@ -525,20 +529,20 @@ func loadDotEnv() {
 }
 
 func usage() {
-	fmt.Println("用法:")
-	fmt.Println("  go run .                  进入交互式对话，直接输入网页需求")
-	fmt.Println("  go run . new --name <目录名> [选项]   一次性命令行生成")
-	fmt.Println("  go run . mcp              以 MCP Server 模式运行（stdio，供外部客户端接入）")
-	fmt.Println("  对话中输入 history        查看已保存的历史记忆摘要")
-	fmt.Println("  对话中输入 skills         查看已加载的声明式技能")
-	fmt.Println("  对话中输入 skill <名>     调用技能，如 skill open-browser <路径>")
+	termui.Section("用法")
+	termui.Hint("  go run .                  进入交互式对话，直接输入网页需求")
+	termui.Hint("  go run . new --name <目录名> [选项]   一次性命令行生成")
+	termui.Hint("  go run . mcp              以 MCP Server 模式运行（stdio，供外部客户端接入）")
+	termui.Hint("  对话中输入 history        查看已保存的历史记忆摘要")
+	termui.Hint("  对话中输入 skills         查看已加载的声明式技能")
+	termui.Hint("  对话中输入 skill <名>     调用技能，如 skill open-browser <路径>")
 	fmt.Println()
-	fmt.Println("选项（new 子命令）:")
-	fmt.Println("  --title     网页标题（默认同 name）")
-	fmt.Println("  --desc      页面简介/需求描述")
-	fmt.Println("  --out       输出根目录（默认 output）")
-	fmt.Println("  --provider  local（默认，本地模板）| llm（DeepSeek 生成）")
-	fmt.Println("  --api-key   DeepSeek API Key（也可用环境变量 DEEPSEEK_API_KEY）")
-	fmt.Println("  --model     模型名（默认 deepseek-chat）")
-	fmt.Println("  --base-url  接口地址（默认 https://api.deepseek.com）")
+	termui.Section("选项（new 子命令）")
+	termui.Hint("  --title     网页标题（默认同 name）")
+	termui.Hint("  --desc      页面简介/需求描述")
+	termui.Hint("  --out       输出根目录（默认 output）")
+	termui.Hint("  --provider  local（默认，本地模板）| llm（DeepSeek 生成）")
+	termui.Hint("  --api-key   DeepSeek API Key（也可用环境变量 DEEPSEEK_API_KEY）")
+	termui.Hint("  --model     模型名（默认 deepseek-chat）")
+	termui.Hint("  --base-url  接口地址（默认 https://api.deepseek.com）")
 }
